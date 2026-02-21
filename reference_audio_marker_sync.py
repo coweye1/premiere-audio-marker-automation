@@ -1,86 +1,120 @@
+"""
+Reference-Based Audio Marker Synchronization Tool
+
+Detects transient peaks from a reference timing audio file
+and automatically generates aligned timeline markers
+in an active Adobe Premiere Pro sequence.
+
+Designed for workflow automation and repetitive marker placement optimization.
+"""
+
 import librosa
 import numpy as np
-import matplotlib.pyplot as plt
-from scipy.signal import find_peaks
 import pymiere
 import tkinter as tk
 from tkinter import filedialog
+from scipy.signal import find_peaks
 
-# Create a file dialog to choose the audio file
-def choose_audio_file():
+
+# Adjustable global timing offset (in seconds)
+GLOBAL_OFFSET = -0.00002
+
+
+def choose_audio_file(prompt: str) -> str:
+    """
+    Open file dialog for selecting an audio file.
+
+    Parameters:
+        prompt (str): Dialog window title
+
+    Returns:
+        str: Selected file path
+    """
     root = tk.Tk()
     root.withdraw()
-    file_path = filedialog.askopenfilename(
-        title="Select an audio file", 
+    return filedialog.askopenfilename(
+        title=prompt,
         filetypes=[("Audio Files", "*.wav *.mp3 *.flac")]
     )
-    return file_path
 
-# Detect peaks with small distance and then filter the closest ones
-def detect_peaks(audio_file):
+
+def detect_reference_peaks(audio_file: str):
+    """
+    Detect transient peaks from reference audio using derivative-based detection.
+
+    Parameters:
+        audio_file (str): Path to input audio file
+
+    Returns:
+        np.ndarray: Array of detected peak sample indices
+        int: Sample rate
+    """
     y, sr = librosa.load(audio_file, sr=None)
+
     envelope = np.abs(y)
+    derivative = np.diff(envelope)
+    derivative = np.append(derivative, 0)
 
-    # Initial peak detection with a very small distance (high precision)
-    peaks, _ = find_peaks(envelope, height=0.3, distance=sr // 2000)
+    peak_indices, _ = find_peaks(
+        derivative,
+        height=np.max(derivative) * 0.15,
+        distance=sr // 500
+    )
 
-    # Filter: Keep only the first peak within each 'group'
-    filtered_peaks = [peaks[0]]
-    min_distance_samples = sr // 15  # Custom filtering distance
+    filtered_peaks = []
+    last_peak = None
+    peak_window = int(0.04 * sr)
 
-    for i in range(1, len(peaks)):
-        if peaks[i] - filtered_peaks[-1] > min_distance_samples:
-            filtered_peaks.append(peaks[i])
+    for peak in peak_indices:
+        if last_peak is None or (peak - last_peak) > peak_window:
+            filtered_peaks.append(peak)
+            last_peak = peak
 
-    print(f"Total Peaks Detected: {len(peaks)}")
-    print(f"Filtered Peaks: {len(filtered_peaks)}")
+    print(f"[INFO] Detected {len(filtered_peaks)} peaks.")
+    return np.array(filtered_peaks), sr
 
-    # Plot the waveform with filtered peaks
-    plt.figure(figsize=(10, 4))
-    plt.plot(envelope, alpha=0.6, label='Envelope')
-    plt.plot(filtered_peaks, envelope[filtered_peaks], "x", label='Filtered Peaks')
-    plt.legend()
-    plt.show()
 
-    return filtered_peaks, sr
+def add_markers_to_premiere(peaks: np.ndarray, sr: int):
+    """
+    Add timeline markers to active Premiere Pro sequence.
 
-# Add markers only for filtered peaks, with a global time offset
-def add_markers(peaks, sr, offset=0.0):
+    Parameters:
+        peaks (np.ndarray): Detected peak sample indices
+        sr (int): Sample rate
+    """
     try:
         project = pymiere.objects.app.project
-        active_sequence = project.activeSequence
+        sequence = project.activeSequence
 
-        if not active_sequence:
-            print("No active sequence found. Please open a sequence in Premiere Pro.")
+        if not sequence:
+            print("[ERROR] No active Premiere Pro sequence found.")
             return
 
-        print(f"Adding {len(peaks)} point markers with a global offset of {offset} seconds...")
-        for peak_idx in peaks:
-            time_in_seconds = (peak_idx / sr) + offset  # Apply global offset
-            marker = active_sequence.markers.createMarker(time_in_seconds)
-            marker.name = "Precise Peak"
-            marker.comments = f"Peak at {time_in_seconds:.6f}s"
-            marker.setColorByIndex(1)  # Red marker for Code B
+        print(f"[INFO] Adding {len(peaks)} markers...")
 
-        print("Markers added successfully!")
+        for peak in peaks:
+            time_sec = (peak / sr) + GLOBAL_OFFSET
+            marker = sequence.markers.createMarker(time_sec)
+            marker.name = "Reference Peak"
+            marker.comments = f"Detected at {time_sec:.6f}s"
+            marker.setColorByIndex(3)
+
+        print("[SUCCESS] Markers added successfully.")
+
     except Exception as e:
-        print(f"Error adding markers: {e}")
+        print(f"[ERROR] {e}")
 
-# Main function
+
 def main():
-    audio_file = choose_audio_file()
-    if audio_file:
-        print(f"Selected audio file: {audio_file}")
+    audio_file = choose_audio_file("Select reference audio file")
 
-        peaks, sr = detect_peaks(audio_file)
+    if not audio_file:
+        print("[WARNING] No file selected.")
+        return
 
-        # Define your desired global offset here (e.g., 0.5 seconds)
-        global_offset = -0.0001
+    peaks, sr = detect_reference_peaks(audio_file)
+    add_markers_to_premiere(peaks, sr)
 
-        # Add markers for filtered peaks with the global offset
-        add_markers(peaks, sr, offset=global_offset)
-    else:
-        print("No audio file selected.")
 
 if __name__ == "__main__":
     main()
