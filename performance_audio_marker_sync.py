@@ -1,3 +1,13 @@
+"""
+Performance-Based Audio Marker Synchronization Tool
+
+Detects transient peaks from performance-derived audio
+and generates aligned timeline markers in an active
+Adobe Premiere Pro sequence.
+
+Designed for performance timing alignment and workflow automation.
+"""
+
 import librosa
 import numpy as np
 import pymiere
@@ -5,76 +15,106 @@ import tkinter as tk
 from tkinter import filedialog
 from scipy.signal import find_peaks
 
-# Define your desired global offset here (e.g., 0.0001 seconds to delay markers by 1 frame)
-global_offset = -0.00002  
 
-# File dialog for choosing audio files
-def choose_audio_file(prompt):
+# Adjustable global timing offset (in seconds)
+GLOBAL_OFFSET = -0.00002
+
+
+def choose_audio_file(prompt: str) -> str:
+    """
+    Open file dialog for selecting an audio file.
+
+    Parameters:
+        prompt (str): Dialog window title
+
+    Returns:
+        str: Selected file path
+    """
     root = tk.Tk()
     root.withdraw()
-    file_path = filedialog.askopenfilename(
+    return filedialog.askopenfilename(
         title=prompt,
         filetypes=[("Audio Files", "*.wav *.mp3 *.flac")]
     )
-    return file_path
 
-# Detect peaks with improved early detection
-def detect_peaks(audio_file):
+
+def detect_performance_peaks(audio_file: str):
+    """
+    Detect transient peaks from performance-derived audio.
+
+    Parameters:
+        audio_file (str): Path to input audio file
+
+    Returns:
+        np.ndarray: Array of detected peak sample indices
+        int: Sample rate
+    """
     y, sr = librosa.load(audio_file, sr=None)
+
     envelope = np.abs(y)
     derivative = np.diff(envelope)
-    derivative = np.append(derivative, 0)  # Match original length
+    derivative = np.append(derivative, 0)
 
-    # 기존보다 좀 더 민감한 필터링 (볼륨 상승 시작 지점 탐지)
-    peak_indices, _ = find_peaks(derivative, height=np.max(derivative) * 0.15, distance=sr // 500)
-    
-    # ** 첫 변곡점만 선택하도록 개선 **
+    peak_indices, _ = find_peaks(
+        derivative,
+        height=np.max(derivative) * 0.2,
+        distance=sr // 400
+    )
+
     filtered_peaks = []
     last_peak = None
-    peak_window = int(0.04 * sr)  # 40ms
+    peak_window = int(0.03 * sr)
 
     for peak in peak_indices:
         if last_peak is None or (peak - last_peak) > peak_window:
             filtered_peaks.append(peak)
             last_peak = peak
 
-    print(f"Detected {len(filtered_peaks)} refined peaks in {audio_file}")
+    print(f"[INFO] Detected {len(filtered_peaks)} performance peaks.")
     return np.array(filtered_peaks), sr
 
-# Add markers in Premiere Pro with global offset
-def add_markers(peaks, sr):
+
+def add_markers_to_premiere(peaks: np.ndarray, sr: int):
+    """
+    Add timeline markers to active Premiere Pro sequence.
+
+    Parameters:
+        peaks (np.ndarray): Detected peak sample indices
+        sr (int): Sample rate
+    """
     try:
         project = pymiere.objects.app.project
-        active_sequence = project.activeSequence
-        if not active_sequence:
-            print("No active sequence found. Please open a sequence in Premiere Pro.")
+        sequence = project.activeSequence
+
+        if not sequence:
+            print("[ERROR] No active Premiere Pro sequence found.")
             return
 
-        print(f"Adding {len(peaks)} refined markers with global offset {global_offset} seconds...")
+        print(f"[INFO] Adding {len(peaks)} performance markers...")
 
         for peak in peaks:
-            time_in_seconds = (peak / sr) + global_offset  # Apply global offset
-            marker = active_sequence.markers.createMarker(time_in_seconds)
-            marker.name = "Refined Peak"
-            marker.comments = f"Detected at {time_in_seconds:.6f}s (Offset applied)"
-            marker.setColorByIndex(3)  # Orange marker
+            time_sec = (peak / sr) + GLOBAL_OFFSET
+            marker = sequence.markers.createMarker(time_sec)
+            marker.name = "Performance Peak"
+            marker.comments = f"Detected at {time_sec:.6f}s"
+            marker.setColorByIndex(2)  # Different color from reference mode
 
-        print("Refined markers added successfully with offset!")
+        print("[SUCCESS] Performance markers added successfully.")
+
     except Exception as e:
-        print(f"Error adding markers: {e}")
-    finally:
-        project = None
-        active_sequence = None
+        print(f"[ERROR] {e}")
 
-# Main function
+
 def main():
-    step_file = choose_audio_file("Select the step audio file")
+    audio_file = choose_audio_file("Select performance audio file")
 
-    if step_file:
-        refined_peaks, sr = detect_peaks(step_file)  # Improved peak detection
-        add_markers(refined_peaks, sr)  # Add refined markers with offset
-    else:
-        print("Audio file must be selected.")
+    if not audio_file:
+        print("[WARNING] No file selected.")
+        return
+
+    peaks, sr = detect_performance_peaks(audio_file)
+    add_markers_to_premiere(peaks, sr)
+
 
 if __name__ == "__main__":
     main()
